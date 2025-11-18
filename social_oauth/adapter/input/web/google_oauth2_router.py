@@ -2,19 +2,23 @@ import uuid
 from fastapi import APIRouter, Response, Request, Cookie
 from fastapi.responses import RedirectResponse
 
+from account.application.usecase.account_usecase import AccountUseCase
+from account.infrastructure.repository.account_repository_impl import AccountRepositoryImpl
 from config.redis_config import get_redis
 from social_oauth.application.usecase.google_oauth2_usecase import GoogleOAuth2UseCase
 from social_oauth.infrastructure.service.google_oauth2_service import GoogleOAuth2Service
+from fastapi import HTTPException
 
 authentication_router = APIRouter()
 service = GoogleOAuth2Service()
-usecase = GoogleOAuth2UseCase(service)
+oauth_usecase = GoogleOAuth2UseCase(service)
+# account_usecase = AccountUseCase(AccountRepositoryImpl())
+account_usecase = AccountUseCase.getInstance()
 redis_client = get_redis()
-
 
 @authentication_router.get("/google")
 async def redirect_to_google():
-    url = usecase.get_authorization_url()
+    url = oauth_usecase.get_authorization_url()
     print("[DEBUG] Redirecting to Google:", url)
     return RedirectResponse(url)
 
@@ -30,8 +34,40 @@ async def process_google_redirect(
     print("state:", state)
 
     # code -> access token
-    access_token = usecase.login_and_fetch_user(state or "", code)
+    access_token = oauth_usecase.login_and_fetch_user(state or "", code)
     print("[DEBUG] Access token received:", access_token.access_token)
+    
+    # 사용자 프로필 가져오기
+    user_profile = service.fetch_user_profile(access_token)
+    print("[DEBUG] User profile:", user_profile)
+
+    # 기존 유저 조회
+    email = user_profile.get("email")
+    existing_account = account_usecase.get_account_by_email(email)
+
+    if not existing_account:
+        # 신규 유저 - account 생성
+        print("[DEBUG] New user, creating account")
+        account_usecase.create_account(
+            username=None,  # OAuth는 email만 사용
+            email=email,
+            name=user_profile.get("name", ""),
+            profile_image=user_profile.get("picture"),
+            provider="google",
+            status="active"
+        )
+    else:
+        # 기존 유저가 탈퇴 상태인지 확인, 테스트를 위해 임시 주석
+        if existing_account.status == "deleted":
+            print("[DEBUG] Account is deleted, cannot login")
+            # raise HTTPException(
+            #     status_code=403,
+            #     detail="This account has been deleted. Please register with a new account."
+            # )
+        else:
+            print("[DEBUG] Existing user, login only")
+            # 로그인 처리 계속
+
 
     # session_id 생성
     session_id = str(uuid.uuid4())
@@ -47,7 +83,7 @@ async def process_google_redirect(
         key="session_id",
         value=session_id,
         httponly=True,
-        secure=False,
+        secure=True,
         samesite="none",
         max_age=3600
     )
@@ -72,3 +108,25 @@ async def auth_status(request: Request, session_id: str | None = Cookie(None)):
     print("[DEBUG] Redis has session_id?", exists)
 
     return {"logged_in": bool(exists)}
+
+
+@authentication_router.post("/logout")
+async def logout(response: Response, session_id: str | None = Cookie(None)):
+    print("[DEBUG] /logout called")
+    print("[DEBUG] Session ID:", session_id)
+
+    if session_id:
+        # Redis에서 세션 삭제
+        deleted = redis_client.delete(session_id)
+        print(f"[DEBUG] Session deleted from Redis: {deleted}")
+
+    # 브라우저 쿠키 삭제
+    response.delete_cookie(
+        key="session_id",
+        httponly=True,
+        secure=True,
+        samesite="none"
+    )
+    print("[DEBUG] Cookie deleted")
+
+    return {"message": "Logged out successfully"}
