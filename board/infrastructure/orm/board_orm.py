@@ -1,15 +1,14 @@
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 
 from datetime import datetime
 
 from config.database.session import Base
 
-# @Entity
-# orm 붙어 있는 것은 실제 Layerd Architecture에서는 entity에 해당함.
-class AnonymousBoardORM(Base):
-    __tablename__ = "anonymous_board"
+class BoardORM(Base):
+    __tablename__ = "board"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("account.id"), nullable=False)
     title = Column(String(255), nullable=False)
     content = Column(String(2000), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
